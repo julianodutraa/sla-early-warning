@@ -1,5 +1,7 @@
 # SLA Early Warning for Batch Pipelines
 
+![SLA Early Warning](assets/cover-en.png)
+
 Predict, at the moment a batch job is released, the probability that it will finish after its SLA deadline. The alert fires with the full slack still ahead, which is exactly when an on call engineer can still act: add executors, reorder the queue, page the upstream owner or warn the downstream consumer.
 
 Model: [julianoxdd/sla-breach-early-warning](https://huggingface.co/julianoxdd/sla-breach-early-warning)
@@ -12,6 +14,8 @@ Most data platforms guard SLAs with a static rule of the form "upstream delay pl
 
 The honest part: a well featured logistic regression gets most of the way there (PR AUC 0.804 against 0.819 for the boosted model). The gain of the boosted model is statistically real but small, so the value comes mostly from framing the problem as learned risk scoring on release time features, not from model complexity. Breaches caused by data skew and spot preemption stay largely unpredictable at release time (recall around 15%), which is the expected ceiling for any model that only sees information available before the run starts.
 
+![Same alert budget](assets/fig-budget.png)
+
 ## Results on the future test split
 
 Test split: the last 27 days of a 180 day simulation, strictly after train and validation. Operating thresholds are chosen on validation for 80% precision and then applied unchanged to test. Confidence intervals come from a bootstrap that resamples whole days, because runs on the same day share cluster state.
@@ -22,11 +26,15 @@ Test split: the last 27 days of a 180 day simulation, strictly after train and v
 | Logistic regression | 0.804 (0.768 to 0.835) | 0.914 | 0.621 | 0.081 | 0.018 |
 | Gradient boosting (published) | **0.819** (0.781 to 0.850) | **0.918** | **0.643** | **0.078** | 0.024 |
 
+![Test PR AUC with 95% interval](assets/fig-results.png)
+
 Paired day bootstrap of the PR AUC difference between gradient boosting and logistic regression: 0.002 to 0.026, so the improvement is positive but modest.
 
 Robustness across five independently regenerated worlds (seeds 11, 23, 42, 101, 202), each retrained from scratch: gradient boosting 0.826 (std 0.007), logistic regression 0.811 (std 0.017), p95 rule 0.442 (std 0.030).
 
 Recall of the published operating point by root cause of the breach: upstream delay 89%, volume spike 65%, cluster contention 41%, data skew 15%, spot preemption 15%.
+
+![Recall by root cause](assets/fig-causes.png)
 
 ## How the data is generated
 
@@ -34,7 +42,7 @@ Every row is one scheduled run of one of 60 jobs over 180 days, around 19 thousa
 
 ## Repository layout
 
-`slawarn/generate.py` holds the seeded generator and the temporal split. `slawarn/model.py` holds feature construction, the baselines, metrics and the day block bootstrap. `train.py` regenerates the data, trains everything, evaluates, runs the robustness sweep and writes `artifacts/metrics.json` and `artifacts/model.skops`. `predict_example.py` scores the published test split with the published model. `tests/` contains the automated checks: determinism, label consistency, no temporal leakage in splits or history features, exclusion of post hoc columns, metric helpers, a performance floor against the rule baseline and a skops round trip.
+`slawarn/generate.py` holds the seeded generator and the temporal split. `slawarn/model.py` holds feature construction, the baselines, metrics and the day block bootstrap. `train.py` regenerates the data, trains everything, evaluates, runs the robustness sweep and writes `artifacts/metrics.json` and `artifacts/model.skops`. `predict_example.py` scores the published test split with the published model. `docs/figures.py` redraws every figure in this README from the reported numbers. `tests/` contains the automated checks: determinism, label consistency, no temporal leakage in splits or history features, exclusion of post hoc columns, metric helpers, a performance floor against the rule baseline and a skops round trip.
 
 ## Reproduce
 

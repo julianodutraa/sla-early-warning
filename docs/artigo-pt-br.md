@@ -1,85 +1,75 @@
-# Prever o estouro de SLA antes do job começar
+# O SLA estoura antes de o job começar
 
-*Um modelo pequeno, um dataset aberto e uma lição sobre onde está o valor de verdade*
+![Capa](figs/cover.png)
 
-Quase todo time de dados descobre que perdeu um SLA do mesmo jeito. Alguém abre o dashboard de manhã, o número está velho, e começa a investigação de trás para frente: qual job atrasou, por que atrasou, quem precisa ser avisado. Quando a pergunta chega ao time de plataforma, o prazo já passou e a única coisa que resta é explicar.
+Em plataforma de dados, o ritual costuma ser o mesmo. Alguém abre o dashboard às nove da manhã, o número está com cara de ontem, e começa a arqueologia: qual job atrasou, desde quando, quem depende dele. Quando o chamado chega ao time de plataforma, o prazo já passou faz tempo. Sobra explicar.
 
-Este artigo descreve um experimento que publiquei de forma aberta para atacar esse problema pelo outro lado: em vez de detectar o estouro depois do prazo, estimar a probabilidade de estouro no instante em que o orquestrador libera o job. Nesse momento a folga inteira ainda está disponível, e isso muda o que o engenheiro de plantão consegue fazer.
+O que me incomodava nesse ritual é que, na maioria das vezes, o atraso era previsível. O upstream já tinha chegado tarde, o volume do dia era o dobro do normal, o cluster estava engasgado desde a madrugada. A informação existia no momento em que o orquestrador liberou o job. Ninguém estava olhando para ela com essa pergunta.
 
-O modelo, o dataset e o código estão públicos:
+Então fiz o teste. Montei um dataset, treinei um modelo pequeno e publiquei tudo aberto para quem quiser reproduzir ou provar que estou errado.
 
-* Modelo: https://huggingface.co/julianoxdd/sla-breach-early-warning
-* Dataset: https://huggingface.co/datasets/julianoxdd/batch-sla-runs
-* Código, testes e avaliação: https://github.com/julianodutraa/sla-early-warning
+Modelo: https://huggingface.co/julianoxdd/sla-breach-early-warning
+Dataset: https://huggingface.co/datasets/julianoxdd/batch-sla-runs
+Código: https://github.com/julianodutraa/sla-early-warning
 
-## A regra que todo mundo escreve
+## A regra do p95 e seus 71% de ruído
 
-A proteção mais comum contra estouro de SLA em pipelines batch é uma regra estática, geralmente escrita em uma tarde e nunca mais revisitada. Ela soma o atraso das dependências upstream ao p95 histórico do runtime do job e compara o resultado com a folga até o prazo. Se passar, dispara o alerta.
+Quase todo mundo protege SLA com a mesma regra, escrita numa tarde e nunca mais revisada: soma o atraso do upstream ao p95 histórico do job e compara com a folga até o prazo. Passou, alerta.
 
-A regra parece sensata e tem uma virtude real: é fácil de explicar. O problema é o comportamento dela em produção. O p95 é, por construção, um cenário pessimista, e somá-lo ao atraso atual faz a regra disparar em muitas execuções que terminariam a tempo. No experimento, aplicada ao pé da letra sobre um mês de execuções, ela dispara 1.319 alertas e só 29% deles correspondem a estouros reais.
+É uma regra honesta e fácil de defender numa reunião. O problema aparece no plantão. O p95 já é um cenário pessimista, e somá-lo ao atraso do dia faz a regra gritar em muita execução que ia terminar a tempo. No meu mês de teste ela disparou 1.319 vezes e acertou 29%.
 
-Esse número explica um fenômeno que qualquer time de plantão conhece. Quando sete em cada dez alertas são falsos, as pessoas aprendem a ignorá-los, e o alerta verdadeiro se perde no ruído. Um alerta que ninguém lê tem custo operacional e nenhum benefício.
+Sete alarmes falsos em cada dez. Qualquer pessoa que já segurou um pager sabe o que acontece depois disso: o canal vira ruído, alguém cria um filtro, e o alerta verdadeiro morre junto com os falsos.
 
-## A pergunta certa
+## Mudar a pergunta
 
-A reformulação que guia o projeto é simples: no instante em que o job é liberado, qual a probabilidade de ele terminar depois do prazo, usando apenas informação que o orquestrador já tem?
+Em vez de "este job está atrasado?", a pergunta passou a ser: no instante em que o orquestrador libera o job, qual a probabilidade de ele terminar depois do prazo?
 
-Essa restrição é o coração do problema. Tudo o que só se sabe depois da execução, como o runtime real, o tempo efetivo de fila ou a causa do atraso, está proibido como entrada. O que sobra são sinais disponíveis antes do job começar: o volume de entrada e a razão dele contra a mediana dos últimos sete dias, o atraso das dependências upstream, a pressão do cluster compartilhado medida por CPU, profundidade de fila e jobs concorrentes, o histórico recente do próprio job e a folga definida pelo SLA.
+A restrição que dá sentido a isso é dura. Tudo o que só se sabe depois da execução fica fora: runtime real, espera efetiva na fila, a causa do atraso. O modelo só enxerga o que existe antes de o job começar. Volume de entrada e a razão contra a mediana dos últimos sete dias. Quanto as dependências já atrasaram. CPU do cluster, profundidade da fila e jobs concorrentes. O histórico recente do próprio job e a folga que o SLA dá.
 
-Enquadrar assim tem uma consequência prática importante. O alerta chega com a folga inteira pela frente. Há tempo para adicionar executores, reordenar a fila, acionar o dono do upstream ou avisar o consumidor do dado antes que ele descubra sozinho.
+A recompensa é que o aviso chega com a folga inteira pela frente. Dá tempo de subir executores, reordenar a fila, cutucar o dono do upstream ou avisar o consumidor antes que ele descubra sozinho.
 
-## Um dataset com mecanismo conhecido
+## Por que dados sintéticos
 
-Logs reais de orquestrador raramente saem das empresas e, quando saem, não trazem a causa de cada atraso rotulada. Por isso construí um dataset sintético com processo gerador documentado e semente fixa, o que permite comparar métodos sob mecanismos conhecidos e reproduzir cada número.
+Log de orquestrador real quase nunca sai de empresa, e quando sai não traz o motivo de cada atraso. Para comparar métodos de forma justa eu precisava conhecer o mecanismo por trás dos dados, então escrevi um gerador com semente fixa.
 
-São 19.440 execuções de 60 jobs ao longo de 180 dias. Cada job tem uma família, um runtime base lognormal, de uma a quatro execuções por dia, uma elasticidade própria em relação ao volume e uma folga de SLA entre 1,5 e 2,8 vezes o runtime típico.
+São 19.440 execuções de 60 jobs ao longo de 180 dias. O runtime de cada execução multiplica o tempo base do job pelo volume elevado a uma elasticidade própria, por um fator de contenção que cresce quando a CPU passa de 70% e por um ruído lognormal. Por cima disso entram eventos rotulados: picos de volume em 4% das execuções, atraso upstream em 12%, skew de dados, mais comum depois de mudança de schema, e preempção de instância spot, mais comum com o cluster cheio. Há sazonalidade semanal e de fim de mês e uma erosão lenta de capacidade ao longo do semestre, que faz a taxa de estouro subir com o tempo. No fim, 19,5% das execuções estouram.
 
-O runtime de cada execução é multiplicativo: o runtime base, multiplicado pelo volume elevado à elasticidade do job, por um fator de contenção que cresce quando a CPU do cluster passa de 70% e com a profundidade da fila, e por ruído lognormal. Sobre isso entram eventos injetados e rotulados. Picos de volume aparecem em 4% das execuções e multiplicam o volume de 1,8 a 4 vezes. Atraso upstream aparece em 12%, com cauda longa. Skew de dados é raro, mais provável em jobs propensos e logo depois de uma mudança de schema no upstream. Preempção de instâncias spot é mais provável sob CPU alta e soma tempo de reexecução.
+Isso tem um preço, e volto a ele no final.
 
-Há sazonalidade semanal e de fim de mês no volume, um ciclo diário na carga do cluster e uma erosão lenta de capacidade ao longo do semestre. Essa erosão faz a taxa de estouro subir com o tempo, o que transforma o período de teste em um pequeno teste de mudança de distribuição. No total, 19,5% das execuções estouram o SLA, e cada estouro traz a causa dominante rotulada.
+## Como eu tentei não me enganar
 
-## Avaliar sem se enganar
+Modelo de operação costuma brilhar na validação e decepcionar na segunda de manhã. Quase sempre é vazamento. Então a divisão é por tempo: 70% da linha do tempo para treino, 15% para validação, os últimos 15% para teste. O histórico de cada job só usa execuções anteriores, e há um teste automatizado que quebra o build se isso mudar.
 
-Modelos de operação costumam parecer ótimos em validação e decepcionar em produção. Quase sempre o motivo é vazamento de informação. Por isso a metodologia recebeu tanta atenção quanto o modelo.
+O limiar de alerta foi escolhido na validação para 80% de precisão e aplicado no teste sem nenhum retoque. Os intervalos de confiança reamostram dias inteiros, porque execuções do mesmo dia dividem o mesmo cluster e não são independentes. E o experimento inteiro rodou de novo em cinco mundos gerados com outras sementes, do zero, para separar resultado de sorte.
 
-A divisão é temporal: 70% da linha do tempo para treino, os 15% seguintes para validação e os 15% finais para teste, sempre estritamente no futuro. As features de histórico são calculadas só com execuções anteriores do mesmo job, e há um teste automatizado que confere isso. As colunas que só existem depois da execução ficam fora da matriz de entrada, com outro teste garantindo.
+O modelo é pequeno de propósito: um HistGradientBoosting do scikit-learn, 27 features, 3 MB, serializado com skops. Treina em menos de um minuto numa CPU. Quatro razões simples carregam boa parte do sinal: folga sobre p50, atraso sobre folga, término esperado com o volume do dia e término pelo p95.
 
-O limiar de alerta é escolhido na validação para atingir 80% de precisão e depois aplicado sem nenhum ajuste no teste. Os intervalos de confiança vêm de um bootstrap que reamostra dias inteiros, não execuções isoladas, porque execuções do mesmo dia compartilham o estado do cluster e não são independentes. Por fim, o experimento inteiro é repetido em cinco mundos regenerados com outras sementes, com dados e modelos refeitos do zero, para separar resultado de sorte.
+## O que saiu
 
-## O modelo
+![PR AUC no teste](figs/fig-resultados.png)
 
-O modelo publicado é deliberadamente pequeno: um HistGradientBoostingClassifier do scikit-learn com 27 features. São 15 sinais brutos, a família do job e quatro razões construídas que carregam boa parte do sinal: a folga dividida pelo p50 histórico, o atraso upstream dividido pela folga, o término esperado usando o p50 multiplicado pela razão de volume, e o término pelo p95 sobre a folga.
+Nos 27 dias de teste, com 594 estouros em 2.920 execuções, a regra do p95 fica em 0,384 de PR AUC. O modelo chega a 0,819, com intervalo de 0,781 a 0,850. Nos cinco mundos regenerados ele fica em 0,826 com desvio de 0,007, e a ordem entre os métodos não muda em nenhuma semente.
 
-O artefato tem cerca de 3 MB, é serializado com skops em vez de pickle e pontua milhares de execuções por segundo em uma única CPU. Treinar tudo, incluindo baselines e a varredura de robustez, leva menos de um minuto.
+O número que eu levaria para uma reunião com gestão, porém, é outro.
 
-Comparei o modelo com dois baselines. O primeiro é a própria regra do p95, usada como pontuação contínua. O segundo é uma regressão logística sobre exatamente as mesmas features, que é o baseline honesto para qualquer modelo de árvore.
+![Mesmo orçamento de alertas](figs/fig-orcamento.png)
 
-## Resultados
+Dei a cada método o mesmo orçamento de 388 alertas no período. O modelo acerta 337, com 87% de precisão. A regra, apontando para as 388 execuções que ela considera mais arriscadas, acerta 161. Mesma carga para o plantão, o dobro de estouros evitáveis.
 
-O conjunto de teste cobre 27 dias no futuro, com 2.920 execuções e 594 estouros.
+## A parte que não entra no slide bonito
 
-Na métrica principal, a área sob a curva de precisão e recall, a regra do p95 fica em 0,384, com intervalo de 0,355 a 0,416. A regressão logística chega a 0,804, com intervalo de 0,768 a 0,835. O modelo publicado chega a 0,819, com intervalo de 0,781 a 0,850. Na área sob a curva ROC, os valores são 0,679, 0,914 e 0,918, respectivamente. O recall a 80% de precisão é 0,054 para a regra, 0,621 para a logística e 0,643 para o modelo.
+A regressão logística, com exatamente as mesmas features, chega a 0,804. O boosting ganha dela por 0,015, e o bootstrap pareado coloca esse ganho entre 0,002 e 0,026. É real, mas é pequeno.
 
-Nos cinco mundos regenerados, o modelo fica em 0,826 de PR AUC com desvio padrão de 0,007, a logística em 0,811 com desvio de 0,017 e a regra em 0,442 com desvio de 0,030. A ordem dos três se mantém em todas as sementes.
+Traduzindo: quase todo o valor vem de tratar SLA como risco aprendido sobre sinais disponíveis na liberação, e muito pouco da sofisticação do modelo. Se o seu time precisa explicar cada alerta para auditoria ou para outra área, uma logística bem montada entrega a maior parte do benefício com explicabilidade quase total. Essa escolha é de governança, não de ciência.
 
-A leitura operacional é a mais útil para quem decide. No limiar escolhido na validação, o modelo dispara 388 alertas no período de teste e antecipa 337 estouros, com 87% de precisão e 57% de recall. Se a regra recebesse o mesmo orçamento de 388 alertas, apontando para as 388 execuções que ela considera mais arriscadas, anteciparia 161. Com a mesma carga de trabalho para o plantão, o número de estouros evitáveis dobra.
+![Recall por causa](figs/fig-causas.png)
 
-## O que o modelo não resolve
+O outro limite aparece quando se abre o recall por causa. Atraso upstream é antecipado em 89% dos casos, pico de volume em 65%, contenção em 41%. Skew de dados e preempção spot ficam em 15%. Esses eventos não deixam rastro antes de o job começar, e nenhum modelo que respeite a regra do jogo vai enxergá-los. Para eles a resposta é outra camada, olhando o progresso durante a execução.
 
-O achado mais importante do experimento não está na tabela principal. A regressão logística, com as mesmas features, chega a 0,804 contra 0,819 do gradient boosting. O bootstrap pareado por dia coloca o ganho do modelo de árvore entre 0,002 e 0,026: positivo, real, mas pequeno.
+E o preço dos dados sintéticos: os mecanismos são plausíveis, mas os números absolutos não dizem nada sobre a sua plataforma. O modelo também pontua cada execução isoladamente, sem raciocinar sobre cascata no DAG, e a calibração se degrada conforme a capacidade do cluster muda. Em produção isso significa retreino periódico, sem negociação.
 
-Isso quer dizer que quase todo o valor vem de tratar o SLA como risco aprendido sobre sinais disponíveis na liberação do job, e muito pouco da capacidade do modelo. Para um time que precisa explicar alertas a auditores ou a outras equipes, uma logística bem construída entrega a maior parte do benefício com explicabilidade quase total. A escolha entre os dois é de engenharia e governança, não de ciência.
+## Se eu fosse colocar isso em produção amanhã
 
-O segundo limite aparece quando se olha o recall por causa. Estouros causados por atraso upstream são antecipados em 89% dos casos e picos de volume em 65%. Contenção de cluster fica em 41%. Já skew de dados e preempção spot ficam em cerca de 15%. Esses dois eventos simplesmente não dão sinal antes de o job começar, e nenhum modelo que respeite a restrição de usar só informação prévia vai enxergá-los. Para eles, a resposta certa é outra camada: monitoramento durante a execução, com detecção de progresso anômalo.
+Começaria extraindo do orquestrador o histórico com horário de liberação, término, prazo e o estado do cluster naquele instante. Refaria as features de histórico só com o passado e dividiria por tempo, nunca aleatoriamente. Sentaria com o time de plantão para definir quantos alertas por semana são aceitáveis antes de escolher qualquer limiar, porque precisão desejada é decisão operacional. E começaria pela logística, trocando pelo boosting só se o ganho medido nos meus dados pagasse a perda de explicabilidade.
 
-## Limitações
-
-Os dados são sintéticos. O gerador codifica mecanismos plausíveis, mas os números absolutos não dizem nada sobre uma plataforma específica, e a distância entre a regra e o modelo depende de quanto as premissas da regra falham em cada ambiente. As features de histórico assumem que a execução anterior do mesmo job já terminou, o que nem sempre é verdade para jobs que rodam quatro vezes por dia. O modelo pontua cada execução de forma independente e não raciocina sobre cascatas no DAG. E como a capacidade do cluster se degrada ao longo do tempo, a calibração das probabilidades também se degrada sem retreino, exatamente como aconteceria em produção.
-
-## Como levar isso para produção
-
-Para quem quiser aplicar a ideia, o caminho que eu seguiria tem quatro passos. Primeiro, extrair do orquestrador o histórico de execuções com horário de liberação, término, prazo e os sinais do cluster no momento da liberação. Segundo, recalcular as features de histórico estritamente com execuções anteriores e dividir os dados por tempo, nunca aleatoriamente. Terceiro, definir o orçamento de alertas com o time de plantão antes de escolher o limiar, porque precisão desejada é uma decisão operacional e não estatística. Quarto, começar pela regressão logística e só adotar o modelo de árvore se o ganho medido justificar a perda de explicabilidade.
-
-O repositório tem o gerador, o treino, a avaliação, os testes e um exemplo de inferência que funciona direto a partir do Hugging Face. Se você trabalha com orquestração, observabilidade ou confiabilidade de plataformas de dados, adoraria saber como esse problema aparece no seu ambiente e quais sinais fariam diferença nele.
-
-*Juliano Dutra de Almeida é Engenheiro de Dados Sênior e trabalha com confiabilidade de plataformas de dados em Kubernetes.*
+O repositório tem o gerador, o treino, a avaliação, os testes e um exemplo de inferência que roda direto do Hugging Face. Se esse problema aparece no seu ambiente de um jeito diferente, me conta qual sinal faria diferença aí. É o tipo de conversa que melhora a próxima versão.
