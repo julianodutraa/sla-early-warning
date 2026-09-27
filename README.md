@@ -4,6 +4,7 @@ Predict, at the moment a batch job is released, the probability that it will fin
 
 Model: [julianoxdd/sla-breach-early-warning](https://huggingface.co/julianoxdd/sla-breach-early-warning)
 Dataset: [julianoxdd/batch-sla-runs](https://huggingface.co/datasets/julianoxdd/batch-sla-runs)
+Article in Portuguese with the full story, methodology and findings: [docs/artigo-pt-br.md](docs/artigo-pt-br.md)
 
 ## Executive summary
 
